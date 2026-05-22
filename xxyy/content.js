@@ -15,7 +15,13 @@
     collapsed: false,
     collapsedMy: false,
     cloneTab: '我的',
-    tieredAlerts: true
+    tieredAlerts: true,
+    floatingMain: false,       // 主面板浮窗模式
+    floatingMy: false,         // 我的面板浮窗模式
+    scopeMain: 'all',          // 'all' 全页面 | 'panel' 仅本面板
+    scopeMy: 'all',
+    posMain: null,             // { right, top } 浮窗位置记忆
+    posMy: null
   };
 
   let config = { ...DEFAULT_CONFIG };
@@ -215,6 +221,8 @@
     let totalCollected = [];
 
     cards.forEach(card => {
+      // 每次扫描顺手刷一下该卡的钱包白名单（用于 scope='panel' 过滤）
+      refreshCardAllowlist(card);
       const wrapper = card.querySelector('.vue-recycle-scroller__item-wrapper');
       if (!wrapper) return;
       const activeTab = getCardActiveTab(card);
@@ -674,17 +682,29 @@
     let highestTierMain = 0;
     let highestTierMy = 0;
 
-    // 每个面板用自己的阈值 (minWallets / windowMin)
+    // 每个面板用自己的阈值 (minWallets / windowMin) + 范围（all / panel）
+    // 范围=panel 时叠加白名单过滤（仅该面板所在卡片的钱包）
+    const mainPanelScope = config.scopeMain || 'all';
+    const myPanelScope = config.scopeMy || 'all';
     const variants = [
       {
         listName: 'kol',
-        filter: () => true,
+        filter: r => mainPanelScope === 'panel' && panelEl
+          ? isWalletInPanelScope(r, panelEl)
+          : true,
         minWallets: config.minWallets,
         windowMs: config.timeWindowMin * 60 * 1000
       },
       {
         listName: 'my',
-        filter: r => (r.sources && r.sources.has('我的')) || r.source === '我的',
+        filter: r => {
+          const sourceMatch = (r.sources && r.sources.has('我的')) || r.source === '我的';
+          if (!sourceMatch) return false;
+          if (myPanelScope === 'panel' && cloneAlertPanelEl) {
+            return isWalletInPanelScope(r, cloneAlertPanelEl);
+          }
+          return true;
+        },
         minWallets: config.minWalletsMy,
         windowMs: config.timeWindowMinMy * 60 * 1000
       }
@@ -949,8 +969,16 @@
     if (o.id) el.id = o.id;
     el.dataset.source = o.source || 'KOL';
 
+    const isMyPanel = o.source === '我的';
+    const scopeKey = isMyPanel ? 'scopeMy' : 'scopeMain';
+    const floatKey = isMyPanel ? 'floatingMy' : 'floatingMain';
+    const curScope = config[scopeKey] || 'all';
+    const curFloat = !!config[floatKey];
+
     const headerExtras = [];
     if (o.showStarList !== false) headerExtras.push('<button class="xcp-icon-btn xcp-star-btn" title="特别关注列表">★ <span class="xcp-star-count">0</span></button>');
+    headerExtras.push('<button class="xcp-icon-btn xcp-scope-btn" title="' + (curScope === 'panel' ? '聚合范围：仅本面板（点击切到全页面）' : '聚合范围：全页面（点击切到仅本面板）') + '">' + (curScope === 'panel' ? '📍' : '🌐') + '</button>');
+    headerExtras.push('<button class="xcp-icon-btn xcp-float-btn" title="' + (curFloat ? '浮窗模式：开（点击关）' : '浮窗模式：关（点击开）') + '">' + (curFloat ? '🪟' : '📌') + '</button>');
     headerExtras.push('<button class="xcp-icon-btn xcp-tier-btn" title="分级提醒开关">' + (config.tieredAlerts ? '🔥' : '🌫️') + '</button>');
     if (o.showSound !== false) headerExtras.push('<button class="xcp-icon-btn xcp-sound-btn" title="声音开关">🔔</button>');
 
@@ -977,6 +1005,111 @@
     return el;
   }
 
+  // ===== 面板 ↔ 监控卡片的映射 + 该卡片可见钱包白名单（用于 scope='panel' 过滤）=====
+  // 每张卡持续累积出现过的钱包（dedupId 优先，没有就 displayName），让用户滚动后白名单越来越完整
+  const cardWalletAllowlists = new WeakMap();
+  function getPanelHomeCard(panelEl) {
+    // 优先看记忆的原始嵌入位置；否则看当前 DOM
+    const home = panelHomes.get(panelEl);
+    const ref = (home && home.parent) || panelEl.parentElement;
+    if (!ref) return null;
+    return ref.closest('.discover-v2-dock-card') || ref.closest('.col.plate .card') || null;
+  }
+  function refreshCardAllowlist(card) {
+    if (!card) return;
+    let set = cardWalletAllowlists.get(card);
+    if (!set) { set = new Set(); cardWalletAllowlists.set(card, set); }
+    card.querySelectorAll('.monitor-item').forEach(item => {
+      const walletEl = item.querySelector('.btn-wallet em');
+      if (!walletEl) return;
+      const name = walletEl.textContent.trim();
+      if (!name) return;
+      set.add(name);
+      // 同时把 nameToAddr 映射里的地址也加入（如果有）
+      const addr = walletNameToAddr.get(name);
+      if (addr) set.add(addr);
+    });
+  }
+  function isWalletInPanelScope(record, panelEl) {
+    const card = getPanelHomeCard(panelEl);
+    if (!card) return true;  // 找不到归属卡，不过滤
+    const set = cardWalletAllowlists.get(card);
+    if (!set || set.size === 0) return true;  // 白名单空，先放过（避免一开始 0 行直接屏蔽所有）
+    const wallet = record.wallet;
+    const addr = record.walletAddr || (record.dedupId && record.dedupId !== record.wallet ? record.dedupId : null);
+    return set.has(wallet) || (addr && set.has(addr));
+  }
+
+  // ===== 浮窗模式：把面板从原位置 detach，作为 fixed 浮窗附到 body，可拖动 =====
+  const panelHomes = new WeakMap();  // 记住 panel 的原始嵌入位置（parent + nextSibling）
+  function applyFloatingMode(panelEl, source, enable) {
+    if (enable) {
+      if (!panelHomes.has(panelEl)) {
+        panelHomes.set(panelEl, {
+          parent: panelEl.parentElement,
+          next: panelEl.nextSibling
+        });
+      }
+      panelEl.classList.add('xcp-floating');
+      const posKey = source === '我的' ? 'posMy' : 'posMain';
+      const pos = config[posKey];
+      if (pos && pos.right != null) panelEl.style.right = pos.right + 'px';
+      if (pos && pos.top != null) panelEl.style.top = pos.top + 'px';
+      if (panelEl.parentElement !== document.body) {
+        document.body.appendChild(panelEl);
+      }
+      enableDragFor(panelEl, source);
+    } else {
+      panelEl.classList.remove('xcp-floating');
+      panelEl.style.right = '';
+      panelEl.style.top = '';
+      const home = panelHomes.get(panelEl);
+      if (home && home.parent && document.body.contains(home.parent)) {
+        if (home.next && home.next.parentElement === home.parent) {
+          home.parent.insertBefore(panelEl, home.next);
+        } else {
+          home.parent.appendChild(panelEl);
+        }
+      }
+    }
+  }
+
+  function enableDragFor(panelEl, source) {
+    if (panelEl.__xcpDragBound) return;
+    panelEl.__xcpDragBound = true;
+    const header = panelEl.querySelector('.xcp-header');
+    if (!header) return;
+    let dragging = false, sx = 0, sy = 0, sr = 0, st = 0;
+    header.addEventListener('mousedown', (e) => {
+      if (!panelEl.classList.contains('xcp-floating')) return;
+      if (e.target.closest('.xcp-icon-btn')) return;
+      dragging = true;
+      sx = e.clientX; sy = e.clientY;
+      const r = panelEl.getBoundingClientRect();
+      sr = window.innerWidth - r.right;
+      st = r.top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const newRight = Math.max(0, Math.min(window.innerWidth - 100, sr - (e.clientX - sx)));
+      const newTop = Math.max(0, Math.min(window.innerHeight - 40, st + (e.clientY - sy)));
+      panelEl.style.right = newRight + 'px';
+      panelEl.style.top = newTop + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      const r = panelEl.getBoundingClientRect();
+      const posKey = source === '我的' ? 'posMy' : 'posMain';
+      config[posKey] = {
+        right: Math.round(window.innerWidth - r.right),
+        top: Math.round(r.top)
+      };
+      saveConfig();
+    });
+  }
+
   function bindPanelEvents(rootEl) {
     if (!rootEl) return;
     const source = rootEl.dataset.source || 'KOL';
@@ -1000,6 +1133,46 @@
         soundBtn.textContent = config[soundKey] ? '🔔' : '🔕';
         soundBtn.title = config[soundKey] ? `本面板声音：开（点击关）` : `本面板声音：关（点击开）`;
         saveConfig();
+      });
+    }
+
+    // 范围切换：仅本面板 vs 全页面
+    const scopeBtn = rootEl.querySelector('.xcp-scope-btn');
+    if (scopeBtn) {
+      const scopeKey = source === '我的' ? 'scopeMy' : 'scopeMain';
+      scopeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        config[scopeKey] = config[scopeKey] === 'panel' ? 'all' : 'panel';
+        scopeBtn.textContent = config[scopeKey] === 'panel' ? '📍' : '🌐';
+        scopeBtn.title = config[scopeKey] === 'panel'
+          ? '聚合范围：仅本面板（点击切到全页面）'
+          : '聚合范围：全页面（点击切到仅本面板）';
+        saveConfig();
+        // 切换后重新跑一遍聚合（清掉对应面板已有 alert）
+        if (source === '我的') alertsMy = [];
+        else alertsKol = [];
+        checkConvergence();
+        renderAlerts();
+      });
+    }
+
+    // 浮窗模式切换
+    const floatBtn = rootEl.querySelector('.xcp-float-btn');
+    if (floatBtn) {
+      const floatKey = source === '我的' ? 'floatingMy' : 'floatingMain';
+      // 初次绑定：如果配置已开启，立刻应用浮窗（重新挂载）
+      if (config[floatKey]) {
+        applyFloatingMode(rootEl, source, true);
+      }
+      floatBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        config[floatKey] = !config[floatKey];
+        floatBtn.textContent = config[floatKey] ? '🪟' : '📌';
+        floatBtn.title = config[floatKey]
+          ? '浮窗模式：开（点击关）'
+          : '浮窗模式：关（点击开）';
+        saveConfig();
+        applyFloatingMode(rootEl, source, config[floatKey]);
       });
     }
 

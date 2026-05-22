@@ -1009,3 +1009,42 @@
   background: rgba(255, 71, 87, 0.15);
   color: #ff8c8c;
 }
+
+/* ===== xxyy 浮窗模式 ===== */
+.xcp-inline.xcp-floating {
+  position: fixed !important;
+  top: 80px;
+  right: 16px;
+  width: 360px;
+  max-height: 75vh;
+  margin: 0;
+  z-index: 999999;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(226, 179, 64, 0.4);
+  backdrop-filter: blur(10px);
+  background: linear-gradient(180deg, rgba(20, 20, 20, 0.95) 0%, rgba(0, 0, 0, 0.92) 100%);
+}
+.xcp-inline.xcp-floating .xcp-header {
+  cursor: move;
+  user-select: none;
+}
+.xcp-inline.xcp-floating .xcp-alerts {
+  flex: 1;
+  max-height: none;
+  overflow-y: auto;
+}
+.xcp-inline.xcp-floating.collapsed {
+  max-height: 42px;
+  width: 240px;
+}
+/* 我的面板浮窗也用同一套，绿色边框区分 */
+.xcp-inline.xcp-floating.xcp-inline-my {
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(76, 209, 55, 0.45);
+}
+
+/* 范围 / 浮窗按钮 */
+.xcp-inline .xcp-scope-btn,
+.xcp-inline .xcp-float-btn {
+  font-size: 12px;
+}
