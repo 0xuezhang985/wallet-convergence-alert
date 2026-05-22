@@ -1048,3 +1048,25 @@
 .xcp-inline .xcp-float-btn {
   font-size: 12px;
 }
+
+/* ===== 每卡独立面板（card-N）— 青蓝主题，跟 KOL/我的 区分 ===== */
+.xcp-inline.xcp-inline-card {
+  background: linear-gradient(180deg, rgba(0, 210, 211, 0.08) 0%, rgba(12, 13, 16, 0.6) 100%);
+  border: 1px solid rgba(0, 210, 211, 0.4);
+}
+.xcp-inline.xcp-inline-card .xcp-header {
+  background: rgba(0, 210, 211, 0.12);
+  border-bottom: 1px solid rgba(0, 210, 211, 0.25);
+}
+.xcp-inline.xcp-inline-card .xcp-header-left {
+  color: #00d2d3;
+}
+.xcp-inline.xcp-inline-card .xcp-settings input[type="number"] {
+  color: #00d2d3;
+}
+.xcp-inline.xcp-inline-card .xcp-settings input[type="number"]:focus {
+  border-color: #00d2d3;
+}
+.xcp-inline.xcp-floating.xcp-inline-card {
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(0, 210, 211, 0.45);
+}

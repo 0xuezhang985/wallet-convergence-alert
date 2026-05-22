@@ -29,6 +29,28 @@
   let alertsMy = [];    // 仅 我的 来源的聚合提醒
   let buyRecords = [];  // 所有来源的买入流水（去重后）
   let closedRecords = []; // 清仓事件流水
+
+  // 额外的「每卡一面板」（第 3 张及之后的监控卡，默认 scope='panel'）
+  // [{ cardEl, idx, el, alerts: [], cardId: 'card-2' ... }]
+  let extraPanels = [];
+
+  // 每卡面板独立 config: config.cardPanels[cardId] = { minWallets, timeWindowMin, scope, soundEnabled, tieredEnabled, collapsed, floating, pos }
+  function getCardPanelCfg(cardId) {
+    if (!config.cardPanels) config.cardPanels = {};
+    if (!config.cardPanels[cardId]) {
+      config.cardPanels[cardId] = {
+        minWallets: 2,
+        timeWindowMin: 5,
+        scope: 'panel',           // 默认仅本面板
+        soundEnabled: true,
+        tieredEnabled: true,
+        collapsed: false,
+        floating: false,
+        pos: null
+      };
+    }
+    return config.cardPanels[cardId];
+  }
   let seenKeys = new Set();
   let seenClosedKeys = new Set();
   let panelEl = null;
@@ -710,8 +732,31 @@
       }
     ];
 
+    // 把每张额外卡的面板也作为 variant 加入
+    for (const ep of extraPanels) {
+      if (!document.body.contains(ep.el)) continue;
+      const cfg = getCardPanelCfg(ep.cardId);
+      const capturedEp = ep;
+      variants.push({
+        listName: 'card-' + ep.idx,
+        cardId: ep.cardId,
+        ep: capturedEp,
+        filter: r => {
+          // 卡面板只看自家卡的钱包（scope='panel'）或全部（scope='all'）
+          if (cfg.scope === 'panel') return isWalletInPanelScope(r, capturedEp.el);
+          return true;
+        },
+        minWallets: cfg.minWallets,
+        windowMs: cfg.timeWindowMin * 60 * 1000
+      });
+    }
+
     for (const v of variants) {
-      let list = v.listName === 'kol' ? alertsKol : alertsMy;
+      let list;
+      if (v.listName === 'kol') list = alertsKol;
+      else if (v.listName === 'my') list = alertsMy;
+      else if (v.ep) list = v.ep.alerts;
+      else continue;
       const groups = {};   // 合约地址 → 聚合数据
 
       for (const r of buyRecords) {
@@ -842,8 +887,10 @@
           };
           list.unshift(alert);
           if (list.length > 20) {
-            if (v.listName === 'kol') alertsKol = list.slice(0, 20);
-            else alertsMy = list.slice(0, 20);
+            const truncated = list.slice(0, 20);
+            if (v.listName === 'kol') alertsKol = truncated;
+            else if (v.listName === 'my') alertsMy = truncated;
+            else if (v.ep) v.ep.alerts = truncated;
           }
           totalTriggered = true;
           if (newTier > highestTierFired) highestTierFired = newTier;
@@ -958,29 +1005,41 @@
     setTimeout(() => badge.classList.remove('is-active'), 3000);
   }
 
-  // ===== 提醒面板（参数化，KOL/我的 共用同一套结构） =====
+  // ===== 提醒面板（参数化：支持 'KOL' / '我的' / 'card-N'）=====
   function createAlertPanel(opts) {
-    // opts: { source: 'KOL'|'我的', themeClass, titleEmoji, titleText, showStarList, showSound, id }
+    // opts: { source, cardId?, themeClass, titleEmoji, titleText, showStarList, showSound, id }
     const o = opts || {};
-    const collapsedKey = o.source === '我的' ? 'collapsedMy' : 'collapsed';
-    const isCollapsed = !!config[collapsedKey];
+    const isMyPanel = o.source === '我的';
+    const isCardPanel = !!o.cardId;
+
+    // 配置取值：card 面板从 cardPanels[cardId] 取；KOL/我的 走旧字段
+    const cardCfg = isCardPanel ? getCardPanelCfg(o.cardId) : null;
+    const isCollapsed = isCardPanel ? cardCfg.collapsed
+      : !!config[isMyPanel ? 'collapsedMy' : 'collapsed'];
+    const curScope = isCardPanel ? cardCfg.scope
+      : (config[isMyPanel ? 'scopeMy' : 'scopeMain'] || 'all');
+    const curFloat = isCardPanel ? cardCfg.floating
+      : !!config[isMyPanel ? 'floatingMy' : 'floatingMain'];
+    const curSound = isCardPanel ? cardCfg.soundEnabled
+      : config[isMyPanel ? 'soundEnabledMy' : 'soundEnabledMain'];
+    const curTiered = isCardPanel ? cardCfg.tieredEnabled : config.tieredAlerts;
+    const curMin = isCardPanel ? cardCfg.minWallets
+      : (isMyPanel ? config.minWalletsMy : config.minWallets);
+    const curWin = isCardPanel ? cardCfg.timeWindowMin
+      : (isMyPanel ? config.timeWindowMinMy : config.timeWindowMin);
+
     const el = document.createElement('div');
     el.className = 'xcp-inline ' + (o.themeClass || '') + (isCollapsed ? ' collapsed' : '');
     if (o.id) el.id = o.id;
     el.dataset.source = o.source || 'KOL';
-
-    const isMyPanel = o.source === '我的';
-    const scopeKey = isMyPanel ? 'scopeMy' : 'scopeMain';
-    const floatKey = isMyPanel ? 'floatingMy' : 'floatingMain';
-    const curScope = config[scopeKey] || 'all';
-    const curFloat = !!config[floatKey];
+    if (o.cardId) el.dataset.cardId = o.cardId;
 
     const headerExtras = [];
     if (o.showStarList !== false) headerExtras.push('<button class="xcp-icon-btn xcp-star-btn" title="特别关注列表">★ <span class="xcp-star-count">0</span></button>');
     headerExtras.push('<button class="xcp-icon-btn xcp-scope-btn" title="' + (curScope === 'panel' ? '聚合范围：仅本面板（点击切到全页面）' : '聚合范围：全页面（点击切到仅本面板）') + '">' + (curScope === 'panel' ? '📍' : '🌐') + '</button>');
     headerExtras.push('<button class="xcp-icon-btn xcp-float-btn" title="' + (curFloat ? '浮窗模式：开（点击关）' : '浮窗模式：关（点击开）') + '">' + (curFloat ? '🪟' : '📌') + '</button>');
-    headerExtras.push('<button class="xcp-icon-btn xcp-tier-btn" title="分级提醒开关">' + (config.tieredAlerts ? '🔥' : '🌫️') + '</button>');
-    if (o.showSound !== false) headerExtras.push('<button class="xcp-icon-btn xcp-sound-btn" title="声音开关">🔔</button>');
+    headerExtras.push('<button class="xcp-icon-btn xcp-tier-btn" title="分级提醒开关">' + (curTiered ? '🔥' : '🌫️') + '</button>');
+    if (o.showSound !== false) headerExtras.push('<button class="xcp-icon-btn xcp-sound-btn" title="声音开关">' + (curSound ? '🔔' : '🔕') + '</button>');
 
     el.innerHTML = `
       <div class="xcp-header">
@@ -995,8 +1054,8 @@
       </div>
       <div class="xcp-star-list" style="display:none;"></div>
       <div class="xcp-settings">
-        <label>≥ <input type="number" class="xcp-min-wallets" min="2" max="20" value="${config.minWallets}"> 钱包</label>
-        <label>内 <input type="number" class="xcp-time-window" min="1" max="60" value="${config.timeWindowMin}"> 分钟</label>
+        <label>≥ <input type="number" class="xcp-min-wallets" min="2" max="20" value="${curMin}"> 钱包</label>
+        <label>内 <input type="number" class="xcp-time-window" min="1" max="60" value="${curWin}"> 分钟</label>
         <span class="xcp-status" title="数据捕获状态">⚪</span>
       </div>
       <div class="xcp-alerts"><div class="xcp-empty">监听中…等待信号</div></div>
@@ -1041,8 +1100,16 @@
   }
 
   // ===== 浮窗模式：把面板从原位置 detach，作为 fixed 浮窗附到 body，可拖动 =====
-  const panelHomes = new WeakMap();  // 记住 panel 的原始嵌入位置（parent + nextSibling）
-  function applyFloatingMode(panelEl, source, enable) {
+  const panelHomes = new WeakMap();
+  function getPosForPanel(source, cardId) {
+    if (cardId) return getCardPanelCfg(cardId).pos;
+    return config[source === '我的' ? 'posMy' : 'posMain'];
+  }
+  function setPosForPanel(source, cardId, pos) {
+    if (cardId) getCardPanelCfg(cardId).pos = pos;
+    else config[source === '我的' ? 'posMy' : 'posMain'] = pos;
+  }
+  function applyFloatingMode(panelEl, source, enable, cardId) {
     if (enable) {
       if (!panelHomes.has(panelEl)) {
         panelHomes.set(panelEl, {
@@ -1051,14 +1118,13 @@
         });
       }
       panelEl.classList.add('xcp-floating');
-      const posKey = source === '我的' ? 'posMy' : 'posMain';
-      const pos = config[posKey];
+      const pos = getPosForPanel(source, cardId);
       if (pos && pos.right != null) panelEl.style.right = pos.right + 'px';
       if (pos && pos.top != null) panelEl.style.top = pos.top + 'px';
       if (panelEl.parentElement !== document.body) {
         document.body.appendChild(panelEl);
       }
-      enableDragFor(panelEl, source);
+      enableDragFor(panelEl, source, cardId);
     } else {
       panelEl.classList.remove('xcp-floating');
       panelEl.style.right = '';
@@ -1074,7 +1140,7 @@
     }
   }
 
-  function enableDragFor(panelEl, source) {
+  function enableDragFor(panelEl, source, cardId) {
     if (panelEl.__xcpDragBound) return;
     panelEl.__xcpDragBound = true;
     const header = panelEl.querySelector('.xcp-header');
@@ -1101,11 +1167,10 @@
       if (!dragging) return;
       dragging = false;
       const r = panelEl.getBoundingClientRect();
-      const posKey = source === '我的' ? 'posMy' : 'posMain';
-      config[posKey] = {
+      setPosForPanel(source, cardId, {
         right: Math.round(window.innerWidth - r.right),
         top: Math.round(r.top)
-      };
+      });
       saveConfig();
     });
   }
@@ -1113,25 +1178,33 @@
   function bindPanelEvents(rootEl) {
     if (!rootEl) return;
     const source = rootEl.dataset.source || 'KOL';
-    const collapsedKey = source === '我的' ? 'collapsedMy' : 'collapsed';
+    const cardId = rootEl.dataset.cardId || null;
+    const isCardPanel = !!cardId;
+    const cardCfg = isCardPanel ? getCardPanelCfg(cardId) : null;
 
     rootEl.querySelector('.xcp-header').addEventListener('click', (e) => {
       if (e.target.closest('.xcp-icon-btn')) return;
       rootEl.classList.toggle('collapsed');
-      config[collapsedKey] = rootEl.classList.contains('collapsed');
+      const collapsed = rootEl.classList.contains('collapsed');
+      if (isCardPanel) cardCfg.collapsed = collapsed;
+      else config[source === '我的' ? 'collapsedMy' : 'collapsed'] = collapsed;
       saveConfig();
     });
 
     const soundBtn = rootEl.querySelector('.xcp-sound-btn');
     if (soundBtn) {
-      const soundKey = source === '我的' ? 'soundEnabledMy' : 'soundEnabledMain';
-      soundBtn.textContent = config[soundKey] ? '🔔' : '🔕';
-      soundBtn.title = config[soundKey] ? `本面板声音：开（点击关）` : `本面板声音：关（点击开）`;
+      const readSound = () => isCardPanel ? cardCfg.soundEnabled : config[source === '我的' ? 'soundEnabledMy' : 'soundEnabledMain'];
+      const writeSound = (v) => {
+        if (isCardPanel) cardCfg.soundEnabled = v;
+        else config[source === '我的' ? 'soundEnabledMy' : 'soundEnabledMain'] = v;
+      };
+      soundBtn.textContent = readSound() ? '🔔' : '🔕';
+      soundBtn.title = readSound() ? `本面板声音：开（点击关）` : `本面板声音：关（点击开）`;
       soundBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        config[soundKey] = !config[soundKey];
-        soundBtn.textContent = config[soundKey] ? '🔔' : '🔕';
-        soundBtn.title = config[soundKey] ? `本面板声音：开（点击关）` : `本面板声音：关（点击开）`;
+        writeSound(!readSound());
+        soundBtn.textContent = readSound() ? '🔔' : '🔕';
+        soundBtn.title = readSound() ? `本面板声音：开（点击关）` : `本面板声音：关（点击开）`;
         saveConfig();
       });
     }
@@ -1139,17 +1212,24 @@
     // 范围切换：仅本面板 vs 全页面
     const scopeBtn = rootEl.querySelector('.xcp-scope-btn');
     if (scopeBtn) {
-      const scopeKey = source === '我的' ? 'scopeMy' : 'scopeMain';
+      const readScope = () => isCardPanel ? cardCfg.scope : (config[source === '我的' ? 'scopeMy' : 'scopeMain'] || 'all');
+      const writeScope = (v) => {
+        if (isCardPanel) cardCfg.scope = v;
+        else config[source === '我的' ? 'scopeMy' : 'scopeMain'] = v;
+      };
       scopeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        config[scopeKey] = config[scopeKey] === 'panel' ? 'all' : 'panel';
-        scopeBtn.textContent = config[scopeKey] === 'panel' ? '📍' : '🌐';
-        scopeBtn.title = config[scopeKey] === 'panel'
+        writeScope(readScope() === 'panel' ? 'all' : 'panel');
+        scopeBtn.textContent = readScope() === 'panel' ? '📍' : '🌐';
+        scopeBtn.title = readScope() === 'panel'
           ? '聚合范围：仅本面板（点击切到全页面）'
           : '聚合范围：全页面（点击切到仅本面板）';
         saveConfig();
-        // 切换后重新跑一遍聚合（清掉对应面板已有 alert）
-        if (source === '我的') alertsMy = [];
+        // 切换后清掉对应面板已有 alert，重新跑
+        if (isCardPanel) {
+          const ep = extraPanels.find(p => p.cardId === cardId);
+          if (ep) ep.alerts = [];
+        } else if (source === '我的') alertsMy = [];
         else alertsKol = [];
         checkConvergence();
         renderAlerts();
@@ -1159,58 +1239,84 @@
     // 浮窗模式切换
     const floatBtn = rootEl.querySelector('.xcp-float-btn');
     if (floatBtn) {
-      const floatKey = source === '我的' ? 'floatingMy' : 'floatingMain';
-      // 初次绑定：如果配置已开启，立刻应用浮窗（重新挂载）
-      if (config[floatKey]) {
-        applyFloatingMode(rootEl, source, true);
+      const readFloat = () => isCardPanel ? cardCfg.floating : !!config[source === '我的' ? 'floatingMy' : 'floatingMain'];
+      const writeFloat = (v) => {
+        if (isCardPanel) cardCfg.floating = v;
+        else config[source === '我的' ? 'floatingMy' : 'floatingMain'] = v;
+      };
+      if (readFloat()) {
+        applyFloatingMode(rootEl, source, true, cardId);
       }
       floatBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        config[floatKey] = !config[floatKey];
-        floatBtn.textContent = config[floatKey] ? '🪟' : '📌';
-        floatBtn.title = config[floatKey]
-          ? '浮窗模式：开（点击关）'
-          : '浮窗模式：关（点击开）';
+        writeFloat(!readFloat());
+        floatBtn.textContent = readFloat() ? '🪟' : '📌';
+        floatBtn.title = readFloat() ? '浮窗模式：开（点击关）' : '浮窗模式：关（点击开）';
         saveConfig();
-        applyFloatingMode(rootEl, source, config[floatKey]);
+        applyFloatingMode(rootEl, source, readFloat(), cardId);
       });
     }
 
+    // tier 按钮（卡面板可独立开关，主/我的面板仍走全局）
     const tierBtn = rootEl.querySelector('.xcp-tier-btn');
     if (tierBtn) {
+      const readTier = () => isCardPanel ? cardCfg.tieredEnabled : config.tieredAlerts;
+      const writeTier = (v) => {
+        if (isCardPanel) cardCfg.tieredEnabled = v;
+        else config.tieredAlerts = v;
+      };
       tierBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        config.tieredAlerts = !config.tieredAlerts;
-        document.querySelectorAll('.xcp-tier-btn').forEach(b => {
-          b.textContent = config.tieredAlerts ? '🔥' : '🌫️';
-          b.title = config.tieredAlerts ? '分级提醒：开（点击关闭）' : '分级提醒：关（点击开启）';
-        });
+        writeTier(!readTier());
+        tierBtn.textContent = readTier() ? '🔥' : '🌫️';
         saveConfig();
-        // 立刻重渲所有面板（已有提醒的 tier 重算，各用各的阈值）
-        for (const a of alertsKol) a.tier = calcTier(a.effectiveCount || a.walletCount, config.minWallets);
-        for (const a of alertsMy) a.tier = calcTier(a.effectiveCount || a.walletCount, config.minWalletsMy);
+        // 主/我的 面板全局开关需同步所有非 card 面板
+        if (!isCardPanel) {
+          document.querySelectorAll('.xcp-tier-btn').forEach(b => {
+            const r = b.closest('.xcp-inline');
+            if (!r || r.dataset.cardId) return;
+            b.textContent = readTier() ? '🔥' : '🌫️';
+          });
+          // 重算非 card 面板的 tier
+          for (const a of alertsKol) a.tier = calcTier(a.effectiveCount || a.walletCount, config.minWallets);
+          for (const a of alertsMy) a.tier = calcTier(a.effectiveCount || a.walletCount, config.minWalletsMy);
+        } else {
+          // 重算本卡面板的 tier
+          const ep = extraPanels.find(p => p.cardId === cardId);
+          if (ep) for (const a of ep.alerts) a.tier = calcTier(a.effectiveCount || a.walletCount, cardCfg.minWallets);
+        }
         renderAlerts();
       });
     }
 
-    // 阈值绑定到本面板自己的 config 字段（不再跨面板同步）
-    const mwKey = source === '我的' ? 'minWalletsMy' : 'minWallets';
-    const twKey = source === '我的' ? 'timeWindowMinMy' : 'timeWindowMin';
+    // (tier btn 已在上面绑定)
+
+    // 阈值绑定到本面板自己的 config 字段
+    const readMin = () => isCardPanel ? cardCfg.minWallets : config[source === '我的' ? 'minWalletsMy' : 'minWallets'];
+    const writeMin = (v) => {
+      if (isCardPanel) cardCfg.minWallets = v;
+      else config[source === '我的' ? 'minWalletsMy' : 'minWallets'] = v;
+    };
+    const readWin = () => isCardPanel ? cardCfg.timeWindowMin : config[source === '我的' ? 'timeWindowMinMy' : 'timeWindowMin'];
+    const writeWin = (v) => {
+      if (isCardPanel) cardCfg.timeWindowMin = v;
+      else config[source === '我的' ? 'timeWindowMinMy' : 'timeWindowMin'] = v;
+    };
 
     const minW = rootEl.querySelector('.xcp-min-wallets');
-    minW.value = config[mwKey];
+    minW.value = readMin();
     minW.addEventListener('change', (e) => {
-      config[mwKey] = Math.max(2, parseInt(e.target.value) || 2);
-      e.target.value = config[mwKey];
+      writeMin(Math.max(2, parseInt(e.target.value) || 2));
+      e.target.value = readMin();
       saveConfig(); resetAndRescan();
     });
     minW.addEventListener('click', e => e.stopPropagation());
 
     const tw = rootEl.querySelector('.xcp-time-window');
-    tw.value = config[twKey];
+    tw.value = readWin();
     tw.addEventListener('change', (e) => {
-      config[twKey] = Math.max(1, parseInt(e.target.value) || 5);
-      e.target.value = config[twKey];
+      writeWin(Math.max(1, parseInt(e.target.value) || 5));
+      e.target.value = readWin();
       saveConfig(); resetAndRescan();
     });
     tw.addEventListener('click', e => e.stopPropagation());
@@ -1219,7 +1325,10 @@
     rootEl.querySelector('.xcp-alerts').addEventListener('click', e => e.stopPropagation());
     rootEl.querySelector('.xcp-clear-btn').addEventListener('click', (e) => {
       e.stopPropagation();
-      if (source === '我的') alertsMy = [];
+      if (isCardPanel) {
+        const ep = extraPanels.find(p => p.cardId === cardId);
+        if (ep) ep.alerts = [];
+      } else if (source === '我的') alertsMy = [];
       else alertsKol = [];
       renderAlerts();
     });
@@ -1360,6 +1469,21 @@
           container.innerHTML = '<div class="xcp-empty">监听中…等待 我的 聚合信号</div>';
         } else {
           container.innerHTML = alertsMy.map(a => renderAlertItem(a, true)).join('');
+        }
+        bindAlertEvents(container);
+      }
+    }
+    // 渲染额外每卡面板
+    for (const ep of extraPanels) {
+      if (!document.body.contains(ep.el)) continue;
+      const container = ep.el.querySelector('.xcp-alerts');
+      const badge = ep.el.querySelector('.xcp-badge');
+      if (container && badge) {
+        badge.textContent = ep.alerts.length;
+        if (ep.alerts.length === 0) {
+          container.innerHTML = '<div class="xcp-empty">监听中…等待本卡聚合信号</div>';
+        } else {
+          container.innerHTML = ep.alerts.map(a => renderAlertItem(a, false)).join('');
         }
         bindAlertEvents(container);
       }
@@ -1695,6 +1819,47 @@
     }
     return true;
   }
+
+  // 给第 3 张及之后的监控卡各挂一个独立面板（默认 scope='panel'）
+  function mountExtraPanels() {
+    const allCards = findAllMonitorCards();
+    const skipFirst = detectLayout() === 'legacy' ? 2 : 1;  // 旧版前 2 张已有主/我的；新版只第 1 张
+    for (let i = skipFirst; i < allCards.length; i++) {
+      const card = allCards[i];
+      const cardId = 'card-' + i;
+      // 已挂过就跳过
+      if (extraPanels.find(p => p.el && document.body.contains(p.el) && p.cardId === cardId && p.cardEl === card)) continue;
+      // DOM 残留（如 mountWatcher 重启）也算
+      if (card.querySelector('.xcp-inline[data-card-id="' + cardId + '"]')) continue;
+
+      const monitor = card.querySelector('.monitor');
+      const bd = monitor && monitor.querySelector('.bd');
+      if (!monitor || !bd) continue;
+
+      const titleNode = card.querySelector('.title-text');
+      const cardLabel = titleNode ? titleNode.textContent.trim() : ('卡 ' + (i + 1));
+      const el = createAlertPanel({
+        source: 'card',
+        cardId,
+        themeClass: 'xcp-inline-card',
+        titleEmoji: '🎯',
+        titleText: `本卡聚合 · ${cardLabel}`,
+        showStarList: true,
+        showSound: true,
+        id: 'xcp-inline-' + cardId
+      });
+      monitor.insertBefore(el, bd);
+      bindPanelEvents(el);
+
+      const ep = { cardEl: card, idx: i, el, alerts: [], cardId };
+      // 移除已死的同 id 旧条目，避免重复
+      extraPanels = extraPanels.filter(p => p.cardId !== cardId || document.body.contains(p.el));
+      extraPanels.push(ep);
+    }
+    // 清理已经从 DOM 消失的 extra panels
+    extraPanels = extraPanels.filter(p => document.body.contains(p.el) && document.body.contains(p.cardEl));
+  }
+
   function mountCloneCard() {
     // 旧版有两张原生卡，不需要克隆
     if (detectLayout() === 'legacy') return false;
@@ -1779,6 +1944,8 @@
           if (mountCloneCard()) renderCloneCard();
         }
       }
+      // 总是检查并挂载额外卡片面板
+      mountExtraPanels();
     }, 2000);
   }
 
@@ -1948,6 +2115,7 @@
       if (ok) {
         renderAlerts();
         mountCloneCard();
+        mountExtraPanels();
         startMountWatcher();
         startCleanup();
         startDomScanner();

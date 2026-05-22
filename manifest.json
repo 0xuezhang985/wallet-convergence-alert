@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "钱包聚合买入提醒",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "监控 xxyy.io / gmgn.ai 钱包追踪面板，N 个以上钱包在时间窗口内买同一代币时弹炫彩提醒。支持特别关注、SPA 跳转、按合约去重。",
   "permissions": ["storage"],
   "content_scripts": [
